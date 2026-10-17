@@ -24,53 +24,52 @@ const server = http.createServer(app);
 // Attach WebSocket server directly to the same HTTP server
 const wss = new WebSocketServer({ server });
 
-// Target keywords for Nyali & Bamburi property & BNB inquiries
-const PRESCRIBED_RULES = [
+// Property lead detection for Nyali and Bamburi.
+// Keep this list focused on property opportunities, not general local services.
+const AREA_PATTERNS = [
+  { name: 'Nyali', pattern: /\bnyali\b/i },
+  { name: 'Bamburi', pattern: /\bbamburi\b/i }
+];
+
+const PROPERTY_RULES = [
   {
-    id: 'rule-bnb-urgent',
-    name: 'Urgent BNB Inquiry (Nyali & Bamburi)',
+    id: 'short-stay',
+    name: 'Short-stay / Airbnb inquiry',
     priority: 'CRITICAL',
-    keywords: [
-      'urgently looking for bnb in nyali',
-      'urgently looking for bnb in bamburi',
-      'urgent bnb nyali',
-      'urgent bnb in nyali',
-      'urgent bnb bamburi',
-      'urgent bnb in bamburi',
-      'bnb in nyali',
-      'bnb in bamburi'
-    ]
+    pattern: /\b(?:airbnb|a\s?b\s?b|bnb|holiday home|holiday rental|short[\s-]?stay|nightly stay|furnished apartment|serviced apartment|vacation rental|weekend stay|place to stay|somewhere to stay|accommodation|guest house|hotel room)\b/i
   },
   {
-    id: 'rule-house-rent',
-    name: 'House Rental Search (Nyali & Bamburi)',
+    id: 'long-term-rental',
+    name: 'Long-term rental inquiry',
     priority: 'HIGH',
-    keywords: [
-      'looking for house in nyali',
-      'looking for house in bamburi',
-      'house for rent in nyali',
-      'house for rent in bamburi',
-      'house in nyali',
-      'house in bamburi'
-    ]
+    pattern: /\b(?:long[\s-]?term rent(?:al)?|house to let|flat to rent|apartment to rent|apartment for rent|house for rent|monthly rent|annual lease|lease|bedsitter|studio apartment|unfurnished house|vacant apartment|vacant house|looking for (?:a )?(?:house|home|apartment|flat|bedsitter|studio|room)|need (?:a )?(?:house|home|apartment|flat|bedsitter|studio|room)|place to live|rental house|rental apartment|one bedroom|two bedroom|three bedroom|1br|2br|3br)\b/i
   },
   {
-    id: 'rule-availability',
-    name: 'Host Availability Check',
+    id: 'property-owner-agent',
+    name: 'Property owner / agent opportunity',
     priority: 'HIGH',
-    keywords: [
-      'who is available now in nyali',
-      'who is available now bamburi',
-      'who is available now in bamburi',
-      'available now nyali',
-      'available now bamburi'
-    ]
+    pattern: /\b(?:property management|property manager|manage my property|manage my apartment|hosting partner|host my apartment|landlord|property agent|real estate agent|caretaker|vacant unit|unit available|apartment available|house available|house to let|property to let|looking for tenants|tenant wanted)\b/i
+  },
+  {
+    id: 'property-sale',
+    name: 'Property sale / investment inquiry',
+    priority: 'NORMAL',
+    pattern: /\b(?:house for sale|land for sale|plot for sale|apartment for sale|property for sale|buy a house|buying property|buy an apartment|property investment|plot to buy|land to buy)\b/i
+  },
+  {
+    id: 'property-referral',
+    name: 'Property recommendation / referral',
+    priority: 'HIGH',
+    pattern: /\b(?:recommend|recommendation|anyone know|anyone has|anyone with|looking for|searching for|need|require|available|availability|booking|book|reserve|reservation|how much|what is the rate|price per night|monthly budget|budget is)\b/i
   }
 ];
 
+const PROPERTY_CONTEXT_PATTERN =
+  /\b(?:airbnb|bnb|accommodation|apartment|flat|house|bedsitter|studio|rental|rent|to let|lease|property|plot|land|villa|holiday home|furnished|unfurnished|booking|host|landlord|tenant|caretaker|real estate|room|bedroom|\d\s?br|unit|guest house|hotel)\b/i;
+
 // Telegram Bot Configuration
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8981263518:AAGMitWrxAOrGXKBlk0Wni1nLZZgTkvqe9c';
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '8984858765';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 // State
 let status = 'INITIALIZING'; // INITIALIZING, QR_READY, CONNECTED, DISCONNECTED
@@ -89,26 +88,42 @@ const broadcast = (data) => {
   });
 };
 
-// Send alert directly to Telegram
+// Escape dynamic text before sending with Telegram HTML parse mode.
+function escapeHtml(value = '') {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// Send alert directly to Telegram.
 async function sendTelegramAlert(lead) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-    console.warn('[Telegram] Missing bot token or chat ID.');
-    return;
+    console.warn('[Telegram] Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID environment variable.');
+    return false;
   }
 
-  const priorityEmoji = lead.priority === 'CRITICAL' ? '🚨🚨 CRITICAL' : '🔔 HIGH PRIORITY';
-  const text = 
-`${priorityEmoji} WHATSAPP LEAD FOUND!
+  const priorityEmoji = lead.priority === 'CRITICAL'
+    ? '🚨 <b>CRITICAL PROPERTY LEAD</b>'
+    : lead.priority === 'HIGH'
+      ? '🔔 <b>HIGH PRIORITY PROPERTY LEAD</b>'
+      : '🏠 <b>PROPERTY OPPORTUNITY</b>';
 
-📍 Group: ${lead.groupName}
-👤 Sender: ${lead.author} (${lead.authorPhone})
-🏷️ Matched Rule: ${lead.ruleName}
-🎯 Keyphrase: "${lead.matchedKeywords.join('", "')}"
-
-💬 Message:
-"${lead.text}"
-
-⏰ Time: ${new Date().toLocaleTimeString('en-KE', { timeZone: 'Africa/Nairobi' })}`;
+  const text = [
+    priorityEmoji,
+    '',
+    `📍 <b>Area:</b> ${escapeHtml((lead.matchedAreas || []).join(', ') || 'Nyali / Bamburi')}`,
+    `👥 <b>Group:</b> ${escapeHtml(lead.groupName || 'WhatsApp Group')}`,
+    `👤 <b>Sender:</b> ${escapeHtml(lead.author || 'Unknown')} (${escapeHtml(lead.authorPhone || 'Unknown')})`,
+    `🏷️ <b>Category:</b> ${escapeHtml(lead.ruleName || 'Property inquiry')}`,
+    `🎯 <b>Matched signals:</b> ${escapeHtml((lead.matchedKeywords || []).join(', '))}`,
+    '',
+    '💬 <b>Message:</b>',
+    escapeHtml(lead.text || ''),
+    '',
+    `⏰ <b>Time:</b> ${escapeHtml(lead.timestamp || new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' }))}`
+  ].join('\n');
 
   try {
     const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
@@ -118,41 +133,80 @@ async function sendTelegramAlert(lead) {
       body: JSON.stringify({
         chat_id: TELEGRAM_CHAT_ID,
         text,
-        parse_mode: 'HTML'
+        parse_mode: 'HTML',
+        disable_web_page_preview: true
       })
     });
+
     const result = await res.json();
     if (result.ok) {
-      console.log(`[Telegram] Alert successfully sent to Telegram chat ${TELEGRAM_CHAT_ID}!`);
-    } else {
-      console.error('[Telegram] Error from Telegram API:', result);
+      console.log('[Telegram] Property lead alert sent successfully.');
+      return true;
     }
+
+    console.error('[Telegram] Telegram API returned an error:', result.description || result);
+    return false;
   } catch (err) {
-    console.error('[Telegram] Failed to dispatch Telegram alert:', err.message);
+    console.error('[Telegram] Failed to dispatch alert:', err.message);
+    return false;
   }
 }
 
-// Keyword matcher engine
+// Classify property-related messages in the target operating areas.
+// A message must mention Nyali or Bamburi and contain property context.
 function checkMessageForKeywords(messageText) {
-  if (!messageText) return null;
-  const lower = messageText.toLowerCase();
+  if (typeof messageText !== 'string' || !messageText.trim()) return null;
 
-  for (const rule of PRESCRIBED_RULES) {
-    const matched = [];
-    for (const kw of rule.keywords) {
-      if (lower.includes(kw.toLowerCase())) {
-        matched.push(kw);
-      }
-    }
-    if (matched.length > 0) {
-      return {
-        ruleName: rule.name,
-        priority: rule.priority,
-        matchedKeywords: matched
-      };
-    }
+  const text = messageText
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[’‘]/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const matchedAreas = AREA_PATTERNS.filter(area => area.pattern.test(text));
+  if (matchedAreas.length === 0) return null;
+
+  if (!PROPERTY_CONTEXT_PATTERN.test(text)) return null;
+
+  const matchedRules = PROPERTY_RULES.filter(rule => rule.pattern.test(text));
+  if (matchedRules.length === 0) return null;
+
+  // Don't classify casual mentions of the beach/area as leads unless the
+  // message also contains a property category or clear property context.
+  const categories = matchedRules.map(rule => rule.name);
+  const hasShortStay = matchedRules.some(rule => rule.id === 'short-stay');
+  const hasLongTermRental = matchedRules.some(rule => rule.id === 'long-term-rental');
+  const hasOwnerOpportunity = matchedRules.some(rule => rule.id === 'property-owner-agent');
+  const hasSaleIntent = matchedRules.some(rule => rule.id === 'property-sale');
+
+  // Prioritise potential short-stay guests; retain other property opportunities.
+  let priority = 'NORMAL';
+  if (hasShortStay) priority = 'CRITICAL';
+  else if (hasLongTermRental || hasOwnerOpportunity) priority = 'HIGH';
+
+  const matchedKeywords = [
+    ...matchedAreas.map(area => area.name),
+    ...matchedRules.map(rule => rule.name)
+  ];
+
+  let leadType = 'Property inquiry';
+  if (hasShortStay) leadType = 'Potential short-stay / Airbnb guest';
+  else if (hasLongTermRental) leadType = 'Potential long-term tenant';
+  else if (hasOwnerOpportunity) leadType = 'Property owner / agent opportunity';
+  else if (hasSaleIntent) leadType = 'Property sale / investment';
+  else if (categories.includes('Property recommendation / referral')) {
+    leadType = 'Property referral';
   }
-  return null;
+
+  return {
+    ruleName: categories.join(' + '),
+    priority,
+    matchedKeywords: [...new Set(matchedKeywords)],
+    matchedAreas: matchedAreas.map(area => area.name),
+    categories,
+    leadType
+  };
 }
 
 // Initialize Baileys WhatsApp Connection
@@ -255,67 +309,70 @@ async function initWhatsAppSession() {
       }
     });
 
-    // Main Group Message Listener
+    // Main Group Message Listener. Process every message in each upsert event.
     sock.ev.on('messages.upsert', async (m) => {
-      if (!m.messages || m.messages.length === 0) return;
-      const msg = m.messages[0];
+      if (!Array.isArray(m.messages) || m.messages.length === 0) return;
 
-      if (!msg.message || msg.key.fromMe) return;
+      for (const msg of m.messages) {
+        try {
+          if (!msg?.message || msg.key?.fromMe) continue;
 
-      const remoteJid = msg.key.remoteJid;
-      const isGroup = remoteJid && remoteJid.endsWith('@g.us');
+          const remoteJid = msg.key?.remoteJid;
+          const isGroup = typeof remoteJid === 'string' && remoteJid.endsWith('@g.us');
+          if (!isGroup) continue;
 
-      // We only monitor group messages
-      if (!isGroup) return;
+          // Ignore protocol-only events and extract common text/caption formats.
+          const messageContent = msg.message;
+          const text = messageContent.conversation
+            || messageContent.extendedTextMessage?.text
+            || messageContent.imageMessage?.caption
+            || messageContent.videoMessage?.caption
+            || messageContent.documentMessage?.caption
+            || messageContent.buttonsResponseMessage?.selectedDisplayText
+            || messageContent.listResponseMessage?.title
+            || messageContent.templateButtonReplyMessage?.selectedDisplayText
+            || '';
 
-      const text = msg.message.conversation || 
-                   msg.message.extendedTextMessage?.text || 
-                   msg.message.imageMessage?.caption || '';
+          if (typeof text !== 'string' || !text.trim()) continue;
 
-      if (!text.trim()) return;
+          const senderPhone = msg.key?.participant
+            ? msg.key.participant.split('@')[0]
+            : 'Unknown';
+          const senderName = msg.pushName || (senderPhone !== 'Unknown' ? `+${senderPhone}` : 'Unknown');
 
-      const senderPhone = msg.key.participant ? msg.key.participant.split('@')[0] : 'Unknown';
-      const senderName = msg.pushName || `+${senderPhone}`;
+          const foundGroup = groupsList.find(group => group.id === remoteJid);
+          const groupName = foundGroup?.name || remoteJid.replace('@g.us', '');
 
-      let groupName = 'WhatsApp Group';
-      const foundGroup = groupsList.find(g => g.id === remoteJid);
-      if (foundGroup) {
-        groupName = foundGroup.name;
-      } else {
-        groupName = remoteJid.replace('@g.us', '');
-      }
+          console.log(`[Message in "${groupName}"] from ${senderName}: "${text.slice(0, 80)}"`);
 
-      console.log(`[Message in "${groupName}"] from ${senderName}: "${text.slice(0, 50)}..."`);
+          const match = checkMessageForKeywords(text);
+          if (!match) continue;
 
-      // Check if text matches any Nyali / Bamburi prescribed keywords
-      const match = checkMessageForKeywords(text);
+          console.log(`\n🏠 PROPERTY LEAD MATCHED in [${groupName}]!`);
+          console.log(`Category: ${match.ruleName}`);
+          console.log(`Areas: ${match.matchedAreas.join(', ')}`);
+          console.log(`Sender: ${senderName} (${senderPhone})`);
+          console.log(`Text: "${text}"\n`);
 
-      if (match) {
-        console.log(`\n🚨🚨 KEYWORD MATCHED in [${groupName}]!`);
-        console.log(`Keywords: ${match.matchedKeywords.join(', ')}`);
-        console.log(`Sender: ${senderName} (+${senderPhone})`);
-        console.log(`Text: "${text}"\n`);
+          const leadAlert = {
+            id: `lead-${msg.key?.id || Date.now()}`,
+            groupName,
+            author: senderName,
+            authorPhone: senderPhone === 'Unknown' ? 'Unknown' : `+${senderPhone}`,
+            text,
+            ruleName: match.ruleName,
+            leadType: match.leadType,
+            priority: match.priority,
+            matchedKeywords: match.matchedKeywords,
+            matchedAreas: match.matchedAreas,
+            timestamp: new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' })
+          };
 
-        const leadAlert = {
-          id: 'lead-' + Date.now(),
-          groupName,
-          author: senderName,
-          authorPhone: `+${senderPhone}`,
-          text,
-          ruleName: match.ruleName,
-          priority: match.priority,
-          matchedKeywords: match.matchedKeywords,
-          timestamp: new Date().toLocaleTimeString('en-KE', { timeZone: 'Africa/Nairobi' })
-        };
-
-        // Broadcast to any open web dashboard
-        broadcast({
-          type: 'REAL_MESSAGE',
-          message: leadAlert
-        });
-
-        // SEND DIRECT NOTIFICATION TO TELEGRAM IMMEDIATELY (24/7)
-        await sendTelegramAlert(leadAlert);
+          broadcast({ type: 'REAL_MESSAGE', message: leadAlert });
+          await sendTelegramAlert(leadAlert);
+        } catch (messageError) {
+          console.error('[WhatsApp] Failed to process an incoming group message:', messageError.message);
+        }
       }
     });
 
@@ -445,10 +502,13 @@ app.post('/api/test-telegram', async (req, res) => {
     groupName: 'Nyali & Bamburi Real Estate Deals',
     author: 'Test Client',
     authorPhone: '+254700000000',
-    ruleName: 'Urgent BNB Inquiry (Nyali & Bamburi)',
+    ruleName: 'Short-stay / Airbnb inquiry',
+    leadType: 'Potential short-stay / Airbnb guest',
     priority: 'CRITICAL',
-    matchedKeywords: ['urgently looking for bnb in nyali'],
-    text: 'Hello, I am urgently looking for bnb in nyali for 2 nights.'
+    matchedAreas: ['Nyali'],
+    matchedKeywords: ['Nyali', 'Short-stay / Airbnb inquiry'],
+    timestamp: new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' }),
+    text: 'Hello, I am looking for an Airbnb in Nyali for 2 nights.'
   });
   res.json({ success: true, message: 'Test alert sent to Telegram!' });
 });
