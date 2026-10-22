@@ -67,9 +67,15 @@ const PROPERTY_RULES = [
 const PROPERTY_CONTEXT_PATTERN =
   /\b(?:airbnb|bnb|accommodation|apartment|flat|house|bedsitter|studio|rental|rent|to let|lease|property|plot|land|villa|holiday home|furnished|unfurnished|booking|host|landlord|tenant|caretaker|real estate|room|bedroom|\d\s?br|unit|guest house|hotel)\b/i;
 
-// Telegram Bot Configuration
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+// WhatsApp destination for property-lead notifications.
+// Kenya local format 0112415949 is normalized to 254112415949@s.whatsapp.net.
+const LEADS_WHATSAPP_NUMBER = process.env.LEADS_WHATSAPP_NUMBER || '0112415949';
+
+function getLeadsWhatsAppJid() {
+  let digits = String(LEADS_WHATSAPP_NUMBER).replace(/\D/g, '');
+  if (digits.startsWith('0')) digits = `254${digits.slice(1)}`;
+  return `${digits}@s.whatsapp.net`;
+}
 
 // State
 let status = 'INITIALIZING'; // INITIALIZING, QR_READY, CONNECTED, DISCONNECTED
@@ -88,66 +94,41 @@ const broadcast = (data) => {
   });
 };
 
-// Escape dynamic text before sending with Telegram HTML parse mode.
-function escapeHtml(value = '') {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-// Send alert directly to Telegram.
-async function sendTelegramAlert(lead) {
-  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-    console.warn('[Telegram] Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID environment variable.');
+// Send a property-lead alert to the chosen WhatsApp number using the active Baileys session.
+async function sendWhatsAppAlert(lead) {
+  if (!sock || status !== 'CONNECTED') {
+    console.warn('[WhatsApp alert] Cannot send: WhatsApp session is not connected.');
     return false;
   }
 
-  const priorityEmoji = lead.priority === 'CRITICAL'
-    ? '🚨 <b>CRITICAL PROPERTY LEAD</b>'
+  const priorityLabel = lead.priority === 'CRITICAL'
+    ? '🚨 CRITICAL PROPERTY LEAD'
     : lead.priority === 'HIGH'
-      ? '🔔 <b>HIGH PRIORITY PROPERTY LEAD</b>'
-      : '🏠 <b>PROPERTY OPPORTUNITY</b>';
+      ? '🔔 HIGH PRIORITY PROPERTY LEAD'
+      : '🏠 PROPERTY OPPORTUNITY';
 
   const text = [
-    priorityEmoji,
+    priorityLabel,
     '',
-    `📍 <b>Area:</b> ${escapeHtml((lead.matchedAreas || []).join(', ') || 'Nyali / Bamburi')}`,
-    `👥 <b>Group:</b> ${escapeHtml(lead.groupName || 'WhatsApp Group')}`,
-    `👤 <b>Sender:</b> ${escapeHtml(lead.author || 'Unknown')} (${escapeHtml(lead.authorPhone || 'Unknown')})`,
-    `🏷️ <b>Category:</b> ${escapeHtml(lead.ruleName || 'Property inquiry')}`,
-    `🎯 <b>Matched signals:</b> ${escapeHtml((lead.matchedKeywords || []).join(', '))}`,
+    `📍 Area: ${(lead.matchedAreas || []).join(', ') || 'Nyali / Bamburi'}`,
+    `👥 Group: ${lead.groupName || 'WhatsApp Group'}`,
+    `👤 Sender: ${lead.author || 'Unknown'} (${lead.authorPhone || 'Unknown'})`,
+    `🏷️ Category: ${lead.ruleName || 'Property inquiry'}`,
+    `🎯 Matched signals: ${(lead.matchedKeywords || []).join(', ') || 'N/A'}`,
     '',
-    '💬 <b>Message:</b>',
-    escapeHtml(lead.text || ''),
+    '💬 Message:',
+    lead.text || '',
     '',
-    `⏰ <b>Time:</b> ${escapeHtml(lead.timestamp || new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' }))}`
+    `⏰ Time: ${lead.timestamp || new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' })}`
   ].join('\n');
 
   try {
-    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: TELEGRAM_CHAT_ID,
-        text,
-        parse_mode: 'HTML',
-        disable_web_page_preview: true
-      })
-    });
-
-    const result = await res.json();
-    if (result.ok) {
-      console.log('[Telegram] Property lead alert sent successfully.');
-      return true;
-    }
-
-    console.error('[Telegram] Telegram API returned an error:', result.description || result);
-    return false;
+    const recipient = getLeadsWhatsAppJid();
+    await sock.sendMessage(recipient, { text });
+    console.log(`[WhatsApp alert] Property lead sent to ${recipient}.`);
+    return true;
   } catch (err) {
-    console.error('[Telegram] Failed to dispatch alert:', err.message);
+    console.error('[WhatsApp alert] Failed to send lead:', err.message);
     return false;
   }
 }
@@ -369,7 +350,7 @@ async function initWhatsAppSession() {
           };
 
           broadcast({ type: 'REAL_MESSAGE', message: leadAlert });
-          await sendTelegramAlert(leadAlert);
+          await sendWhatsAppAlert(leadAlert);
         } catch (messageError) {
           console.error('[WhatsApp] Failed to process an incoming group message:', messageError.message);
         }
@@ -413,7 +394,7 @@ app.get('/qr', (req, res) => {
           <h2>✅ WhatsApp is Connected!</h2>
           <p>Listening to groups in real time.</p>
           <p>Account: <strong>${connectedUser ? connectedUser.id : 'Active'}</strong></p>
-          <p style="color: #8696a0; font-size: 13px;">Any matching Nyali / Bamburi leads will be sent directly to your Telegram.</p>
+          <p style="color: #8696a0; font-size: 13px;">Any matching Nyali / Bamburi property leads will be sent to WhatsApp number 0112415949.</p>
         </div>
       </body>
       </html>
@@ -496,9 +477,9 @@ app.get('/health', (req, res) => {
   res.status(200).send('OK');
 });
 
-// Test telegram alert route
-app.post('/api/test-telegram', async (req, res) => {
-  await sendTelegramAlert({
+// Test WhatsApp lead notification route
+app.post('/api/test-whatsapp', async (req, res) => {
+  const success = await sendWhatsAppAlert({
     groupName: 'Nyali & Bamburi Real Estate Deals',
     author: 'Test Client',
     authorPhone: '+254700000000',
@@ -510,7 +491,12 @@ app.post('/api/test-telegram', async (req, res) => {
     timestamp: new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' }),
     text: 'Hello, I am looking for an Airbnb in Nyali for 2 nights.'
   });
-  res.json({ success: true, message: 'Test alert sent to Telegram!' });
+  res.status(success ? 200 : 503).json({
+    success,
+    message: success
+      ? 'Test alert sent to WhatsApp number 0112415949.'
+      : 'Test alert could not be sent. Check that WhatsApp is connected and review the server logs.'
+  });
 });
 
 // Catch-all for single-page app (Express 5 compatible)
