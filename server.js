@@ -24,48 +24,20 @@ const server = http.createServer(app);
 // Attach WebSocket server directly to the same HTTP server
 const wss = new WebSocketServer({ server });
 
-// Property lead detection for Nyali and Bamburi.
-// Keep this list focused on property opportunities, not general local services.
+// STRICT lead detection: only active short-stay guest enquiries for House of Amelia.
+// Do not alert on long-term rentals, property sales, agent offers, or property adverts.
 const AREA_PATTERNS = [
   { name: 'Nyali', pattern: /\bnyali\b/i },
   { name: 'Bamburi', pattern: /\bbamburi\b/i }
 ];
 
-const PROPERTY_RULES = [
-  {
-    id: 'short-stay',
-    name: 'Short-stay / Airbnb inquiry',
-    priority: 'CRITICAL',
-    pattern: /\b(?:airbnb|a\s?b\s?b|bnb|holiday home|holiday rental|short[\s-]?stay|nightly stay|furnished apartment|serviced apartment|vacation rental|weekend stay|place to stay|somewhere to stay|accommodation|guest house|hotel room)\b/i
-  },
-  {
-    id: 'long-term-rental',
-    name: 'Long-term rental inquiry',
-    priority: 'HIGH',
-    pattern: /\b(?:long[\s-]?term rent(?:al)?|house to let|flat to rent|apartment to rent|apartment for rent|house for rent|monthly rent|annual lease|lease|bedsitter|studio apartment|unfurnished house|vacant apartment|vacant house|looking for (?:a )?(?:house|home|apartment|flat|bedsitter|studio|room)|need (?:a )?(?:house|home|apartment|flat|bedsitter|studio|room)|place to live|rental house|rental apartment|one bedroom|two bedroom|three bedroom|1br|2br|3br)\b/i
-  },
-  {
-    id: 'property-owner-agent',
-    name: 'Property owner / agent opportunity',
-    priority: 'HIGH',
-    pattern: /\b(?:property management|property manager|manage my property|manage my apartment|hosting partner|host my apartment|landlord|property agent|real estate agent|caretaker|vacant unit|unit available|apartment available|house available|house to let|property to let|looking for tenants|tenant wanted)\b/i
-  },
-  {
-    id: 'property-sale',
-    name: 'Property sale / investment inquiry',
-    priority: 'NORMAL',
-    pattern: /\b(?:house for sale|land for sale|plot for sale|apartment for sale|property for sale|buy a house|buying property|buy an apartment|property investment|plot to buy|land to buy)\b/i
-  },
-  {
-    id: 'property-referral',
-    name: 'Property recommendation / referral',
-    priority: 'HIGH',
-    pattern: /\b(?:recommend|recommendation|anyone know|anyone has|anyone with|looking for|searching for|need|require|available|availability|booking|book|reserve|reservation|how much|what is the rate|price per night|monthly budget|budget is)\b/i
-  }
-];
+const SHORT_STAY_PATTERN = /\b(?:airbnb|a\s?b\s?b|bnb|short[\s-]?stay|holiday (?:home|rental|apartment)|vacation rental|serviced apartment|furnished apartment|accommodation for (?:a few nights|the weekend)|place to stay|somewhere to stay|guest house|hotel room|per night|nightly|\d+\s*nights?|weekend stay)\b/i;
 
-const PROPERTY_CONTEXT_PATTERN =
-  /\b(?:airbnb|bnb|accommodation|apartment|flat|house|bedsitter|studio|rental|rent|to let|lease|property|plot|land|villa|holiday home|furnished|unfurnished|booking|host|landlord|tenant|caretaker|real estate|room|bedroom|\d\s?br|unit|guest house|hotel)\b/i;
+// Require an active request from someone who needs accommodation.
+const ACTIVE_DEMAND_PATTERN = /\b(?:(?:i(?:'m| am)?\s+)?(?:looking for|searching for|seeking|trying to find|in need of)|(?:i\s+)?need|(?:i\s+)?want|we(?:'re| are)\s+(?:looking for|searching for)|anyone (?:know|knows|can recommend|with)|can anyone recommend|please recommend|recommend (?:an? |a )?(?:airbnb|bnb|accommodation|place)|does anyone know|is there (?:an? )?(?:airbnb|bnb|place to stay|short[\s-]?stay)|need (?:an? )?(?:airbnb|bnb|place to stay|short[\s-]?stay|accommodation|furnished apartment)|want to book|looking to book|planning to book|book(?:ing)? for (?:\d+\s*)?nights?|require (?:an? )?(?:airbnb|bnb|accommodation|short[\s-]?stay)|any available (?:airbnb|bnb|short[\s-]?stay|accommodation)|do you have (?:an? )?(?:airbnb|bnb|short[\s-]?stay))\b/i;
+
+// Hard reject obvious advertisements and offers, even if they contain booking terms.
+const ADVERT_PATTERN = /\b(?:we offer|we have (?:an? |\d+ )?(?:airbnb|apartments?|units?|houses?|rooms?)|available now|units? available|apartments? available|houses? available|book now|call now|contact us|dm for|inbox (?:me|us)|special offer|discount|our apartments?|our units?|for bookings|limited offer|check out our|price list|fully furnished units?|new listing|now renting|vacant units?|tenant wanted|looking for tenants|property management|property agent|real estate agent|land for sale|plot for sale|house for sale|property for sale)\b/i;
 
 // WhatsApp destination for property-lead notifications.
 // Kenya local format 0112415949 is normalized to 254112415949@s.whatsapp.net.
@@ -84,6 +56,8 @@ let rawQrString = null;
 let connectedUser = null;
 let groupsList = [];
 let sock = null;
+const processedMessageIds = new Set();
+const MAX_PROCESSED_MESSAGE_IDS = 10000;
 
 const broadcast = (data) => {
   const payload = JSON.stringify(data);
@@ -94,7 +68,7 @@ const broadcast = (data) => {
   });
 };
 
-// Send a property-lead alert to the chosen WhatsApp number using the active Baileys session.
+// Send a short-stay guest enquiry alert to the chosen WhatsApp number using the active Baileys session.
 async function sendWhatsAppAlert(lead) {
   if (!sock || status !== 'CONNECTED') {
     console.warn('[WhatsApp alert] Cannot send: WhatsApp session is not connected.');
@@ -102,10 +76,8 @@ async function sendWhatsAppAlert(lead) {
   }
 
   const priorityLabel = lead.priority === 'CRITICAL'
-    ? '🚨 CRITICAL PROPERTY LEAD'
-    : lead.priority === 'HIGH'
-      ? '🔔 HIGH PRIORITY PROPERTY LEAD'
-      : '🏠 PROPERTY OPPORTUNITY';
+    ? '🏡 POTENTIAL HOUSE OF AMELIA GUEST ENQUIRY'
+    : '🏡 POTENTIAL HOUSE OF AMELIA GUEST ENQUIRY';
 
   const text = [
     priorityLabel,
@@ -125,7 +97,7 @@ async function sendWhatsAppAlert(lead) {
   try {
     const recipient = getLeadsWhatsAppJid();
     await sock.sendMessage(recipient, { text });
-    console.log(`[WhatsApp alert] Property lead sent to ${recipient}.`);
+    console.log(`[WhatsApp alert] Guest enquiry alert sent to ${recipient}.`);
     return true;
   } catch (err) {
     console.error('[WhatsApp alert] Failed to send lead:', err.message);
@@ -133,8 +105,7 @@ async function sendWhatsAppAlert(lead) {
   }
 }
 
-// Classify property-related messages in the target operating areas.
-// A message must mention Nyali or Bamburi and contain property context.
+// Only return leads when location + short-stay intent + active demand all match.
 function checkMessageForKeywords(messageText) {
   if (typeof messageText !== 'string' || !messageText.trim()) return null;
 
@@ -147,46 +118,17 @@ function checkMessageForKeywords(messageText) {
 
   const matchedAreas = AREA_PATTERNS.filter(area => area.pattern.test(text));
   if (matchedAreas.length === 0) return null;
-
-  if (!PROPERTY_CONTEXT_PATTERN.test(text)) return null;
-
-  const matchedRules = PROPERTY_RULES.filter(rule => rule.pattern.test(text));
-  if (matchedRules.length === 0) return null;
-
-  // Don't classify casual mentions of the beach/area as leads unless the
-  // message also contains a property category or clear property context.
-  const categories = matchedRules.map(rule => rule.name);
-  const hasShortStay = matchedRules.some(rule => rule.id === 'short-stay');
-  const hasLongTermRental = matchedRules.some(rule => rule.id === 'long-term-rental');
-  const hasOwnerOpportunity = matchedRules.some(rule => rule.id === 'property-owner-agent');
-  const hasSaleIntent = matchedRules.some(rule => rule.id === 'property-sale');
-
-  // Prioritise potential short-stay guests; retain other property opportunities.
-  let priority = 'NORMAL';
-  if (hasShortStay) priority = 'CRITICAL';
-  else if (hasLongTermRental || hasOwnerOpportunity) priority = 'HIGH';
-
-  const matchedKeywords = [
-    ...matchedAreas.map(area => area.name),
-    ...matchedRules.map(rule => rule.name)
-  ];
-
-  let leadType = 'Property inquiry';
-  if (hasShortStay) leadType = 'Potential short-stay / Airbnb guest';
-  else if (hasLongTermRental) leadType = 'Potential long-term tenant';
-  else if (hasOwnerOpportunity) leadType = 'Property owner / agent opportunity';
-  else if (hasSaleIntent) leadType = 'Property sale / investment';
-  else if (categories.includes('Property recommendation / referral')) {
-    leadType = 'Property referral';
-  }
+  if (ADVERT_PATTERN.test(text)) return null;
+  if (!SHORT_STAY_PATTERN.test(text)) return null;
+  if (!ACTIVE_DEMAND_PATTERN.test(text)) return null;
 
   return {
-    ruleName: categories.join(' + '),
-    priority,
-    matchedKeywords: [...new Set(matchedKeywords)],
+    ruleName: 'Short-stay / Airbnb guest enquiry',
+    priority: 'CRITICAL',
+    matchedKeywords: [...matchedAreas.map(area => area.name), 'Short-stay context', 'Active guest enquiry'],
     matchedAreas: matchedAreas.map(area => area.name),
-    categories,
-    leadType
+    categories: ['Short-stay / Airbnb guest enquiry'],
+    leadType: 'Potential House of Amelia guest'
   };
 }
 
@@ -292,6 +234,7 @@ async function initWhatsAppSession() {
 
     // Main Group Message Listener. Process every message in each upsert event.
     sock.ev.on('messages.upsert', async (m) => {
+      if (m.type !== 'notify') return; // Ignore history/backfill events.
       if (!Array.isArray(m.messages) || m.messages.length === 0) return;
 
       for (const msg of m.messages) {
@@ -299,6 +242,13 @@ async function initWhatsAppSession() {
           if (!msg?.message || msg.key?.fromMe) continue;
 
           const remoteJid = msg.key?.remoteJid;
+          const messageId = msg.key?.id;
+          if (remoteJid && messageId) {
+            const dedupeKey = `${remoteJid}:${messageId}`;
+            if (processedMessageIds.has(dedupeKey)) continue;
+            // Record after a lead matches, so non-lead messages don't fill the cache.
+          }
+
           const isGroup = typeof remoteJid === 'string' && remoteJid.endsWith('@g.us');
           if (!isGroup) continue;
 
@@ -329,7 +279,17 @@ async function initWhatsAppSession() {
           const match = checkMessageForKeywords(text);
           if (!match) continue;
 
-          console.log(`\n🏠 PROPERTY LEAD MATCHED in [${groupName}]!`);
+          if (remoteJid && messageId) {
+            const dedupeKey = `${remoteJid}:${messageId}`;
+            if (processedMessageIds.has(dedupeKey)) continue;
+            processedMessageIds.add(dedupeKey);
+            if (processedMessageIds.size > MAX_PROCESSED_MESSAGE_IDS) {
+              const oldestKey = processedMessageIds.values().next().value;
+              processedMessageIds.delete(oldestKey);
+            }
+          }
+
+          console.log(`\n🏠 SHORT-STAY GUEST ENQUIRY MATCHED in [${groupName}]!`);
           console.log(`Category: ${match.ruleName}`);
           console.log(`Areas: ${match.matchedAreas.join(', ')}`);
           console.log(`Sender: ${senderName} (${senderPhone})`);
