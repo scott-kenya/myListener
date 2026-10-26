@@ -354,7 +354,7 @@ app.get('/qr', (req, res) => {
           <h2>✅ WhatsApp is Connected!</h2>
           <p>Listening to groups in real time.</p>
           <p>Account: <strong>${connectedUser ? connectedUser.id : 'Active'}</strong></p>
-          <p style="color: #8696a0; font-size: 13px;">Any matching Nyali / Bamburi property leads will be sent to WhatsApp number 0112415949.</p>
+          <p style="color: #8696a0; font-size: 13px;">Any matching Nyali / Bamburi property leads will be sent to WhatsApp number 0724345098.</p>
         </div>
       </body>
       </html>
@@ -454,7 +454,7 @@ app.post('/api/test-whatsapp', async (req, res) => {
   res.status(success ? 200 : 503).json({
     success,
     message: success
-      ? 'Test alert sent to WhatsApp number 0112415949.'
+      ? 'Test alert sent to WhatsApp number 0724345098.'
       : 'Test alert could not be sent. Check that WhatsApp is connected and review the server logs.'
   });
 });
