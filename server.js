@@ -41,7 +41,7 @@ const ADVERT_PATTERN = /\b(?:we offer|we have (?:an? |\d+ )?(?:airbnb|apartments
 
 // WhatsApp destination for property-lead notifications.
 // Kenya local format 0112415949 is normalized to 254112415949@s.whatsapp.net.
-const LEADS_WHATSAPP_NUMBER = process.env.LEADS_WHATSAPP_NUMBER || '0112415949';
+const LEADS_WHATSAPP_NUMBER = process.env.LEADS_WHATSAPP_NUMBER || '0724345098';
 
 function getLeadsWhatsAppJid() {
   let digits = String(LEADS_WHATSAPP_NUMBER).replace(/\D/g, '');
