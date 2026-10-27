@@ -24,24 +24,175 @@ const server = http.createServer(app);
 // Attach WebSocket server directly to the same HTTP server
 const wss = new WebSocketServer({ server });
 
-// STRICT lead detection: only active short-stay guest enquiries for House of Amelia.
-// Do not alert on long-term rentals, property sales, agent offers, or property adverts.
+// Area patterns covering Nyali, Bamburi, their estates, beaches, landmarks, and roads
 const AREA_PATTERNS = [
-  { name: 'Nyali', pattern: /\bnyali\b/i },
-  { name: 'Bamburi', pattern: /\bbamburi\b/i }
+  {
+    name: 'Nyali',
+    // Matches nyali, old nyali, new nyali, links road, greenwood, nyali cinemax, cinemax, city mall, beach road, premier hospital, mkomani, etc.
+    pattern: /\b(?:nyali|nyalli|nyli|old[\s_-]?nyali|new[\s_-]?nyali|links[\s_-]?(?:r(?:oa)?d)?|greenwood|nyali[\s_-]?cinemax|cinemax|city[\s_-]?mall|nyali[\s_-]?cent(?:re|er)|beach[\s_-]?(?:r(?:oa)?d)?|premier[\s_-]?hospital|mkomani)\b/i
+  },
+  {
+    name: 'Bamburi',
+    // Matches bamburi, bamburi beach, mtambo, fisheries, vescon, kadzandani, masters, haller park, cowrie shell, etc.
+    pattern: /\b(?:bamburi|bambury|bambur|bamburi[\s_-]?beach|bamburi[\s_-]?mtambo|mtambo|bamburi[\s_-]?fisheries|fisheries|vescon(?:\s*[123])?|kadzandani|kadzanani|masters|bamburi[\s_-]?masters|haller[\s_-]?park|cowrie[\s_-]?shell)\b/i
+  }
 ];
 
-const SHORT_STAY_PATTERN = /\b(?:airbnb|a\s?b\s?b|bnb|short[\s-]?stay|holiday (?:home|rental|apartment)|vacation rental|serviced apartment|furnished apartment|accommodation for (?:a few nights|the weekend)|place to stay|somewhere to stay|guest house|hotel room|per night|nightly|\d+\s*nights?|weekend stay)\b/i;
+// Accommodation & Property types (short-stay, holiday, Airbnb, BnB, furnished, sizes, rooms, houses, apartments)
+const ACCOMMODATION_PATTERNS = [
+  // Airbnb / BnB variations
+  /\b(?:air[\s-]?bnb|a\s?b\s?b|bnb|b&b|b\s?n\s?b)\b/i,
+  // Short stay / holiday / vacation
+  /\b(?:short[\s-]?stay|holiday (?:home|rental|apartment|stay)|vacation (?:rental|home|stay)|staycation|getaway)\b/i,
+  // Furnished & serviced units
+  /\b(?:(?:fully[\s-]?)?furnished (?:apartment|house|unit|studio|home|flat|place)?|serviced (?:apartment|unit))\b/i,
+  // Units / sizes / bedrooms
+  /\b(?:studio(?: apartment)?|bed[\s-]?sitter|single room|chumba)\b/i,
+  /\b(?:\d+|one|two|three|four)[\s-]*(?:bed(?:room)?s?|bdrms?|bdrs?|brs?|bhk)\b/i,
+  // General houses / apartments / places
+  /\b(?:apartments?|apts?|flats?|units?|houses?|villas?|cottages?|homes?|residences?|nyumba)\b/i,
+  // Places to stay / lodging
+  /\b(?:place to stay|somewhere to stay|a place|accommodation|accomodation|guest[\s-]?house|guest[\s-]?wing|hotel(?: room)?|lodging)\b/i
+];
 
-// Require an active request from someone who needs accommodation.
-const ACTIVE_DEMAND_PATTERN = /\b(?:(?:i(?:'m| am)?\s+)?(?:looking for|searching for|seeking|trying to find|in need of)|(?:i\s+)?need|(?:i\s+)?want|we(?:'re| are)\s+(?:looking for|searching for)|anyone (?:know|knows|can recommend|with)|can anyone recommend|please recommend|recommend (?:an? |a )?(?:airbnb|bnb|accommodation|place)|does anyone know|is there (?:an? )?(?:airbnb|bnb|place to stay|short[\s-]?stay)|need (?:an? )?(?:airbnb|bnb|place to stay|short[\s-]?stay|accommodation|furnished apartment)|want to book|looking to book|planning to book|book(?:ing)? for (?:\d+\s*)?nights?|require (?:an? )?(?:airbnb|bnb|accommodation|short[\s-]?stay)|any available (?:airbnb|bnb|short[\s-]?stay|accommodation)|do you have (?:an? )?(?:airbnb|bnb|short[\s-]?stay))\b/i;
+// Inquiry intent patterns in English and Swahili/Sheng (covering all natural phrasing humans use)
+const INQUIRY_INTENT_PATTERNS = [
+  // English search/need/want/booking
+  /\b(?:(?:i(?:'m| am)?\s+)?(?:looking for|searching for|in search of|seeking|trying to find|in need of))\b/i,
+  /\b(?:(?:i\s+)?(?:need|needs|want|wants|require|requires))\b/i,
+  /\b(?:urgently (?:looking for|searching for|need|in need of|seeking)|urgent (?:need|request|search))\b/i,
+  /\b(?:(?:looking|planning|want|wanting)\s+to\s+(?:book|rent|stay|get|find|lease))\b/i,
+  /\b(?:anyone (?:with|has|knows|can recommend|hosting)|who (?:has|is hosting|can host|knows)|does anyone have)\b/i,
+  /\b(?:is there (?:an?|any)|are there (?:any)?|any available)\b/i,
+  /\b(?:can (?:anyone|someone|you) recommend|please recommend|kindly recommend|recommend (?:an? |a )?)\b/i,
+  /\b(?:any leads?|any link|any recommendations?|any suggestions?)\b/i,
+  /\b(?:(?:hosts?|owner)\s+(?:in|for|around)\s+(?:nyali|bamburi))\b/i,
+  /\b(?:(?:inbox|dm|text|reach out to)\s+me\s+(?:if you have|with details|with options|with availability))\b/i,
+  /\b(?:check(?:ing)?[\s-]?in\s+(?:today|tonight|tomorrow|now|\d+[\w\s]+))\b/i,
+  /\b(?:for\s+\d+\s*(?:nights?|days?)|per night|nightly|weekend stay)\b/i,
+  /\b(?:budget(?:\s*is)?\s*(?:around|of|is)?\s*(?:ksh|kes)?\s*\d+k?)\b/i,
+  /\b(?:wanted\s*[:\s]|needed\s*[:\s]|urgently wanted)\b/i,
 
-// Hard reject obvious advertisements and offers, even if they contain booking terms.
-const ADVERT_PATTERN = /\b(?:we offer|we have (?:an? |\d+ )?(?:airbnb|apartments?|units?|houses?|rooms?)|available now|units? available|apartments? available|houses? available|book now|call now|contact us|dm for|inbox (?:me|us)|special offer|discount|our apartments?|our units?|for bookings|limited offer|check out our|price list|fully furnished units?|new listing|now renting|vacant units?|tenant wanted|looking for tenants|property management|property agent|real estate agent|land for sale|plot for sale|house for sale|property for sale)\b/i;
+  // Swahili & Sheng cues (essential for natural Kenyan WhatsApp communications)
+  /\b(?:(?:ni|tu)?natafuta|tafuta)\b/i,                                  // looking for
+  /\b(?:(?:ni|tu)?nahitaji|hitaji)\b/i,                                   // need
+  /\b(?:kuna (?:yeyote|mwenye|mtu|yule)|kuna)\b/i,                       // is there / is there anyone
+  /\b(?:nani (?:ako na|ana|anayejua)|mwenye (?:ako na|ana))\b/i,          // who has / who knows
+  /\b(?:yeyote (?:ako na|mwenye)|mko na|uko na)\b/i,                     // anyone with / do you have
+  /\b(?:kama (?:kuna|uko na)|iko available|iko wazi)\b/i,                // if there is / is it available
+  /\b(?:naomba (?:kupata|msaada)|nisaidie (?:kupata|kutafuta))\b/i,       // requesting / help me find
+  /\b(?:nicheki|nitext|nidm|nipigie)\b/i,                                // reach out to me / check me
+  /\b(?:kulala|kupanga|kushinda|kukaa)\b/i                               // sleep / rent / stay
+];
+
+// Seller advertisement markers to avoid alerting on host promotions or agent adverts
+const SELLER_ADVERT_PATTERNS = [
+  /\b(?:we (?:offer|have (?:available|units?|apartments?|vacant)|manage))\b/i,
+  /\b(?:our (?:apartments?|units?|rates?|prices?|properties|villas?))\b/i,
+  /\b(?:welcome to (?:our|the)?\s*[\w\s]+(?:apartments?|residence|court|suites?|villas?))\b/i,
+  /\b(?:book your stay with us|enjoy your stay with us|experience luxury at)\b/i,
+  /\b(?:daily rate\s*[:=-]|rates?\s*[:=-]\s*(?:ksh|kes)?\s*\d+|price\s*[:=-]\s*(?:ksh|kes)?\s*\d+|rent\s*[:=-]\s*(?:ksh|kes)?\s*\d+)/i,
+  /\b(?:paybill|till\s*(?:no|number)?|lipa na mpesa)\b/i,
+  /\b(?:now (?:letting|renting|selling)|ready for occupation|units? ready|vacant units?)\b/i,
+  /\b(?:plot[s]? for sale|land for sale|house[s]? for sale|property for sale|title deed ready)\b/i,
+  /\b(?:amenities\s*[:=-]|features\s*[:=-]|features include\s*[:=-]|free high[\s-]speed wi[\s-]?fi|swimming pool[\s,]+free wifi)/i
+];
+
+// Cross-Group Lead Deduplicator: guarantees ONLY ONE PROMPT is delivered per unique inquiry,
+// regardless of how many groups the message is posted to.
+class LeadDeduplicator {
+  constructor(ttlMs = 6 * 60 * 60 * 1000) { // 6 hours deduplication window
+    this.ttlMs = ttlMs;
+    this.recentLeads = new Map();
+    this.maxEntries = 10000;
+  }
+
+  cleanup() {
+    const now = Date.now();
+    for (const [key, entry] of this.recentLeads.entries()) {
+      if (now - entry.timestamp > this.ttlMs) {
+        this.recentLeads.delete(key);
+      }
+    }
+    if (this.recentLeads.size > this.maxEntries) {
+      const excess = this.recentLeads.size - this.maxEntries;
+      const keys = Array.from(this.recentLeads.keys()).slice(0, excess);
+      for (const k of keys) this.recentLeads.delete(k);
+    }
+  }
+
+  normalizeForDedupe(text) {
+    return (text || '')
+      .normalize('NFKC')
+      .toLowerCase()
+      .replace(/[’‘`´"']/g, '')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  checkAndRecord(senderPhone, rawText, groupName) {
+    this.cleanup();
+    const now = Date.now();
+    const normalized = this.normalizeForDedupe(rawText);
+
+    // Vector 1: Same sender phone + normalized message snippet (catches same person posting in 5-20 groups)
+    const hasValidPhone = senderPhone && senderPhone !== 'Unknown' && senderPhone.length >= 7;
+    const senderKey = hasValidPhone ? `sender:${senderPhone}:${normalized.slice(0, 80)}` : null;
+
+    // Vector 2: Exact/near-exact inquiry content across groups (catches forwarded broadcasts)
+    const contentKey = normalized.length >= 15 ? `content:${normalized.slice(0, 100)}` : null;
+
+    let existing = null;
+    let matchType = null;
+
+    if (senderKey && this.recentLeads.has(senderKey)) {
+      existing = this.recentLeads.get(senderKey);
+      matchType = 'sender_cross_post';
+    } else if (contentKey && this.recentLeads.has(contentKey)) {
+      existing = this.recentLeads.get(contentKey);
+      matchType = 'broadcast_cross_post';
+    }
+
+    if (existing) {
+      existing.groups.add(groupName);
+      existing.duplicateCount = (existing.duplicateCount || 1) + 1;
+      return {
+        isDuplicate: true,
+        firstGroupName: existing.firstGroupName,
+        firstSeenAt: existing.timestamp,
+        duplicateCount: existing.duplicateCount,
+        allGroups: Array.from(existing.groups),
+        matchType
+      };
+    }
+
+    // New unique inquiry
+    const entry = {
+      timestamp: now,
+      firstGroupName: groupName,
+      groups: new Set([groupName]),
+      senderPhone,
+      duplicateCount: 1
+    };
+
+    if (senderKey) this.recentLeads.set(senderKey, entry);
+    if (contentKey) this.recentLeads.set(contentKey, entry);
+
+    return {
+      isDuplicate: false,
+      firstGroupName: groupName,
+      allGroups: [groupName],
+      duplicateCount: 1
+    };
+  }
+}
+
+const leadDeduplicator = new LeadDeduplicator();
 
 // WhatsApp destination for property-lead notifications.
 // Kenya local format 0112415949 is normalized to 254112415949@s.whatsapp.net.
-const LEADS_WHATSAPP_NUMBER = process.env.LEADS_WHATSAPP_NUMBER || '0724345098';
+const LEADS_WHATSAPP_NUMBER = process.env.LEADS_WHATSAPP_NUMBER || '0112415949';
 
 function getLeadsWhatsAppJid() {
   let digits = String(LEADS_WHATSAPP_NUMBER).replace(/\D/g, '');
@@ -75,9 +226,7 @@ async function sendWhatsAppAlert(lead) {
     return false;
   }
 
-  const priorityLabel = lead.priority === 'CRITICAL'
-    ? '🏡 POTENTIAL HOUSE OF AMELIA GUEST ENQUIRY'
-    : '🏡 POTENTIAL HOUSE OF AMELIA GUEST ENQUIRY';
+  const priorityLabel = '🏡 POTENTIAL NYALI / BAMBURI INQUIRY';
 
   const text = [
     priorityLabel,
@@ -105,30 +254,90 @@ async function sendWhatsAppAlert(lead) {
   }
 }
 
-// Only return leads when location + short-stay intent + active demand all match.
+// Broad human inquiry detection covering English, Swahili, Sheng, casual phrasing, and abbreviations for Nyali and Bamburi
 function checkMessageForKeywords(messageText) {
   if (typeof messageText !== 'string' || !messageText.trim()) return null;
 
   const text = messageText
     .normalize('NFKC')
     .toLowerCase()
-    .replace(/[’‘]/g, "'")
+    .replace(/[’‘`´]/g, "'")
     .replace(/\s+/g, ' ')
     .trim();
 
+  // 1. Must match at least one target area: Nyali or Bamburi
   const matchedAreas = AREA_PATTERNS.filter(area => area.pattern.test(text));
   if (matchedAreas.length === 0) return null;
-  if (ADVERT_PATTERN.test(text)) return null;
-  if (!SHORT_STAY_PATTERN.test(text)) return null;
-  if (!ACTIVE_DEMAND_PATTERN.test(text)) return null;
+
+  // 2. Reject hard property sales (plots / land for sale)
+  if (/\b(?:plots? for sale|land for sale|acres? for sale|title deed ready|plot for sale)\b/i.test(text)) {
+    return null;
+  }
+
+  // 3. Check for inquiry intent (English + Swahili/Sheng)
+  const hasInquiryIntent = INQUIRY_INTENT_PATTERNS.some(p => p.test(text));
+
+  // 4. Check for accommodation / property terms
+  const matchedAccommodations = ACCOMMODATION_PATTERNS.filter(p => p.test(text));
+  const hasAccommodation = matchedAccommodations.length > 0;
+
+  // 5. Short telegraphed inquiries (e.g. "1br airbnb in nyali", "nyali bnb tonight?", "bamburi airbnb budget 3k")
+  const isDirectTelegraph = hasAccommodation && (
+    text.includes('?') ||
+    /\b(?:tonight|today|tomorrow|weekend|now|nights?|days?|budget|ksh|kes|urgent|urgently)\b/i.test(text) ||
+    text.length <= 110
+  );
+
+  // Must have:
+  // - Accommodation term + Inquiry intent
+  // - OR Accommodation term + Direct telegraph / short question
+  // - OR Strong inquiry intent + general stay/room/house words in Nyali or Bamburi
+  const isLeadCandidate = (hasAccommodation && hasInquiryIntent) ||
+    isDirectTelegraph ||
+    (hasInquiryIntent && /\b(?:room|stay|place|house|apartment|unit|bnb|airbnb|kupanga|kulala)\b/i.test(text));
+
+  if (!isLeadCandidate) return null;
+
+  // 6. Check for seller advertisements
+  if (hasInquiryIntent) {
+    // If client inquiry intent is present ("looking for", "natafuta", "need", "nahitaji"),
+    // only reject if it has multiple clear commercial seller markers and no clear asking phrases.
+    const advertMatches = SELLER_ADVERT_PATTERNS.filter(p => p.test(text));
+    if (advertMatches.length >= 2 && !/\b(?:looking|natafuta|need|nahitaji|anyone with|who has|nani ako na|is there|kuna)\b/i.test(text)) {
+      return null;
+    }
+  } else {
+    // For telegraphed messages without explicit question words, reject if any seller advert marker is present
+    if (SELLER_ADVERT_PATTERNS.some(p => p.test(text))) {
+      return null;
+    }
+  }
+
+  // Determine category and rule label
+  const isShortStay = /\b(?:airbnb|bnb|short[\s-]?stay|holiday|vacation|staycation|nightly|per night|\d+\s*nights?|weekend stay)\b/i.test(text);
+  const isFurnished = /\b(?:furnished|serviced)\b/i.test(text);
+  
+  let ruleName = 'House / Apartment inquiry';
+  if (isShortStay) {
+    ruleName = 'Short-stay / Airbnb guest enquiry';
+  } else if (isFurnished) {
+    ruleName = 'Furnished rental enquiry';
+  }
+
+  const areaNames = matchedAreas.map(a => a.name);
+  const matchedKeywords = [
+    ...areaNames,
+    isShortStay ? 'Short-stay / Airbnb' : (isFurnished ? 'Furnished unit' : 'Residential rental'),
+    hasInquiryIntent ? 'Client Inquiry Intent' : 'Direct Target Inquiry'
+  ];
 
   return {
-    ruleName: 'Short-stay / Airbnb guest enquiry',
+    ruleName,
     priority: 'CRITICAL',
-    matchedKeywords: [...matchedAreas.map(area => area.name), 'Short-stay context', 'Active guest enquiry'],
-    matchedAreas: matchedAreas.map(area => area.name),
-    categories: ['Short-stay / Airbnb guest enquiry'],
-    leadType: 'Potential House of Amelia guest'
+    matchedKeywords,
+    matchedAreas: areaNames,
+    categories: [ruleName],
+    leadType: `Potential ${areaNames.join(' / ')} Client / Guest`
   };
 }
 
@@ -279,6 +488,16 @@ async function initWhatsAppSession() {
           const match = checkMessageForKeywords(text);
           if (!match) continue;
 
+          // Cross-group deduplication check:
+          // If the same user or identical inquiry was already posted in another group recently,
+          // suppress extra prompts so the user ONLY receives one prompt.
+          const dedupeResult = leadDeduplicator.checkAndRecord(senderPhone, text, groupName);
+          if (dedupeResult.isDuplicate) {
+            console.log(`\n⏭️ [Deduplicator] Suppressed duplicate inquiry from ${senderName} (${senderPhone}) in group "${groupName}".`);
+            console.log(`   (Original prompt was already sent from group "${dedupeResult.firstGroupName}" | duplicate #${dedupeResult.duplicateCount})\n`);
+            continue; // SKIP extra prompt! Only ONE prompt is sent!
+          }
+
           if (remoteJid && messageId) {
             const dedupeKey = `${remoteJid}:${messageId}`;
             if (processedMessageIds.has(dedupeKey)) continue;
@@ -289,7 +508,7 @@ async function initWhatsAppSession() {
             }
           }
 
-          console.log(`\n🏠 SHORT-STAY GUEST ENQUIRY MATCHED in [${groupName}]!`);
+          console.log(`\n🏠 GUEST ENQUIRY MATCHED in [${groupName}]!`);
           console.log(`Category: ${match.ruleName}`);
           console.log(`Areas: ${match.matchedAreas.join(', ')}`);
           console.log(`Sender: ${senderName} (${senderPhone})`);
