@@ -265,58 +265,67 @@ function checkMessageForKeywords(messageText) {
     .replace(/\s+/g, ' ')
     .trim();
 
-  // 1. Must match at least one target area: Nyali or Bamburi
+  // A message must mention Nyali or Bamburi.
   const matchedAreas = AREA_PATTERNS.filter(area => area.pattern.test(text));
   if (matchedAreas.length === 0) return null;
 
-  // 2. Reject hard property sales (plots / land for sale)
-  if (/\b(?:plots? for sale|land for sale|acres? for sale|title deed ready|plot for sale)\b/i.test(text)) {
+  // Never alert on land/plot sales.
+  if (/\b(?:plots?\s+for\s+sale|land\s+for\s+sale|acres?\s+for\s+sale|title\s+deed\s+ready)\b/i.test(text)) {
     return null;
   }
 
-  // 3. Check for inquiry intent (English + Swahili/Sheng)
-  const hasInquiryIntent = INQUIRY_INTENT_PATTERNS.some(p => p.test(text));
+  // Reject obvious promotions/listings before looking for inquiry words.
+  // These are intentionally strong seller-side signals.
+  const HARD_AD_PATTERNS = [
+    /\b(?:we\s+(?:offer|have|provide|manage|rent\s+out|let\s+out))\b/i,
+    /\b(?:our\s+(?:apartments?|units?|houses?|villas?|properties|rates?|prices?|guests?|rooms?))\b/i,
+    /\b(?:available\s+(?:now|today|for\s+(?:booking|rent|occupation|short[\s-]?stay)))\b/i,
+    /\b(?:now\s+(?:available|booking|letting|renting)|book\s+now|book\s+today|book\s+with\s+us)\b/i,
+    /\b(?:contact\s+(?:me|us|the\s+host)|call\s+(?:me|us|now)|whatsapp\s+(?:me|us)|dm\s+(?:me|us)\s+for)\b/i,
+    /\b(?:daily\s+rate|nightly\s+rate|rates?\s*[:=-]\s*(?:ksh|kes|usd|\$)?\s*\d+|price\s*[:=-]\s*(?:ksh|kes|usd|\$)?\s*\d+|from\s+(?:ksh|kes|usd|\$)\s*\d+)\b/i,
+    /\b(?:paybill|till\s*(?:no|number)?|lipa\s+na\s+mpesa)\b/i,
+    /\b(?:welcome\s+to\s+our|experience\s+(?:luxury|comfort)|enjoy\s+(?:luxury|your\s+stay)|perfect\s+for\s+(?:families|holidays|your\s+stay))\b/i,
+    /\b(?:fully\s+furnished|swimming\s+pool|free\s+wifi|free\s+wi-fi|secure\s+parking|air\s*condition(?:ed|ing))\b/i
+  ];
 
-  // 4. Check for accommodation / property terms
-  const matchedAccommodations = ACCOMMODATION_PATTERNS.filter(p => p.test(text));
-  const hasAccommodation = matchedAccommodations.length > 0;
+  const hasHardAdSignal = HARD_AD_PATTERNS.some(pattern => pattern.test(text));
 
-  // 5. Short telegraphed inquiries (e.g. "1br airbnb in nyali", "nyali bnb tonight?", "bamburi airbnb budget 3k")
-  const isDirectTelegraph = hasAccommodation && (
+  // Seller/agent wording should disqualify the message even if it also contains
+  // a generic phrase such as "looking for" or "available".
+  const hasSellerIntent = /\b(?:i\s+am\s+advertising|advert(?:ise|ising|isement)|listing\s+available|property\s+listing|host\s+here|agent\s+here|landlord\s+here|we\s+are\s+located|check\s+out\s+this|limited\s+offer|special\s+offer|discount\s+available|vacancy\s+available)\b/i.test(text);
+
+  // Positive signals must indicate that the author is seeking accommodation.
+  const explicitInquiryPatterns = [
+    /\b(?:i(?:'m| am)?\s+(?:looking\s+for|searching\s+for|in\s+need\s+of|seeking))\b/i,
+    /\b(?:i\s+(?:need|want|require)\s+(?:an?\s+)?(?:airbnb|bnb|apartment|house|room|accommodation|place|unit|stay))\b/i,
+    /\b(?:natafuta|ninatafuta|nahitaji|ninahitaji|naomba\s+(?:kupata|nyumba|chumba|malazi))\b/i,
+    /\b(?:anyone\s+(?:know|has|have|with)|does\s+anyone\s+have|who\s+(?:has|knows|can\s+recommend)|can\s+anyone\s+recommend)\b/i,
+    /\b(?:is\s+there\s+(?:an?\s+)?(?:airbnb|bnb|apartment|room|house|accommodation|place)|are\s+there\s+(?:any\s+)?(?:airbnbs?|apartments?|rooms?|houses?|units?))\b/i,
+    /\b(?:need\s+(?:a|an|some)?\s*(?:place\s+to\s+stay|accommodation|room|house|apartment|airbnb|bnb))\b/i,
+    /\b(?:looking\s+to\s+(?:book|rent|stay|get))\b/i,
+    /\b(?:check[\s-]?in\s+(?:today|tonight|tomorrow)|for\s+\d+\s*(?:nights?|days?)|budget\s*(?:is|of|around)?\s*(?:ksh|kes)?\s*\d+k?)\b/i,
+    /\b(?:kuna\s+(?:yeyote|mwenye|mtu|nyumba|chumba)|nani\s+(?:ako\s+na|ana|anayejua)|mko\s+na|uko\s+na|iko\s+available)\b/i
+  ];
+  const hasExplicitInquiry = explicitInquiryPatterns.some(pattern => pattern.test(text));
+
+  // A short, telegraphic query can qualify only if it looks like a request
+  // (question mark or a stay date/budget cue), not merely a property listing.
+  const hasAccommodation = ACCOMMODATION_PATTERNS.some(pattern => pattern.test(text));
+  const hasRequestCue =
     text.includes('?') ||
-    /\b(?:tonight|today|tomorrow|weekend|now|nights?|days?|budget|ksh|kes|urgent|urgently)\b/i.test(text) ||
-    text.length <= 110
-  );
+    /\b(?:tonight|today|tomorrow|weekend|next\s+week|check[\s-]?in|nights?|days?|budget|ksh|kes|urgent|urgently|available\?)\b/i.test(text);
 
-  // Must have:
-  // - Accommodation term + Inquiry intent
-  // - OR Accommodation term + Direct telegraph / short question
-  // - OR Strong inquiry intent + general stay/room/house words in Nyali or Bamburi
-  const isLeadCandidate = (hasAccommodation && hasInquiryIntent) ||
-    isDirectTelegraph ||
-    (hasInquiryIntent && /\b(?:room|stay|place|house|apartment|unit|bnb|airbnb|kupanga|kulala)\b/i.test(text));
+  // Any strong advertising signal rejects the message unless the wording is
+  // clearly a request from a guest AND does not contain seller-intent language.
+  if (hasSellerIntent) return null;
+  if (hasHardAdSignal && !hasExplicitInquiry) return null;
 
-  if (!isLeadCandidate) return null;
+  const isDirectRequest = hasAccommodation && hasRequestCue && !hasHardAdSignal;
+  if (!hasExplicitInquiry && !isDirectRequest) return null;
 
-  // 6. Check for seller advertisements
-  if (hasInquiryIntent) {
-    // If client inquiry intent is present ("looking for", "natafuta", "need", "nahitaji"),
-    // only reject if it has multiple clear commercial seller markers and no clear asking phrases.
-    const advertMatches = SELLER_ADVERT_PATTERNS.filter(p => p.test(text));
-    if (advertMatches.length >= 2 && !/\b(?:looking|natafuta|need|nahitaji|anyone with|who has|nani ako na|is there|kuna)\b/i.test(text)) {
-      return null;
-    }
-  } else {
-    // For telegraphed messages without explicit question words, reject if any seller advert marker is present
-    if (SELLER_ADVERT_PATTERNS.some(p => p.test(text))) {
-      return null;
-    }
-  }
-
-  // Determine category and rule label
   const isShortStay = /\b(?:airbnb|bnb|short[\s-]?stay|holiday|vacation|staycation|nightly|per night|\d+\s*nights?|weekend stay)\b/i.test(text);
   const isFurnished = /\b(?:furnished|serviced)\b/i.test(text);
-  
+
   let ruleName = 'House / Apartment inquiry';
   if (isShortStay) {
     ruleName = 'Short-stay / Airbnb guest enquiry';
@@ -324,11 +333,11 @@ function checkMessageForKeywords(messageText) {
     ruleName = 'Furnished rental enquiry';
   }
 
-  const areaNames = matchedAreas.map(a => a.name);
+  const areaNames = matchedAreas.map(area => area.name);
   const matchedKeywords = [
     ...areaNames,
     isShortStay ? 'Short-stay / Airbnb' : (isFurnished ? 'Furnished unit' : 'Residential rental'),
-    hasInquiryIntent ? 'Client Inquiry Intent' : 'Direct Target Inquiry'
+    hasExplicitInquiry ? 'Explicit guest inquiry' : 'Direct stay request'
   ];
 
   return {
