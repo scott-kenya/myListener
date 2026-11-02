@@ -24,7 +24,7 @@ const server = http.createServer(app);
 // Attach WebSocket server directly to the same HTTP server
 const wss = new WebSocketServer({ server });
 
-// Area patterns covering Nyali, Bamburi, their estates, beaches, landmarks, and roads
+// Area patterns covering Nyali, Westlands, Kileleshwa, their estates, beaches, landmarks, and roads
 const AREA_PATTERNS = [
   {
     name: 'Nyali',
@@ -32,9 +32,14 @@ const AREA_PATTERNS = [
     pattern: /\b(?:nyali|nyalli|nyli|old[\s_-]?nyali|new[\s_-]?nyali|links[\s_-]?(?:r(?:oa)?d)?|greenwood|nyali[\s_-]?cinemax|cinemax|city[\s_-]?mall|nyali[\s_-]?cent(?:re|er)|beach[\s_-]?(?:r(?:oa)?d)?|premier[\s_-]?hospital|mkomani)\b/i
   },
   {
-    name: 'Bamburi',
-    // Matches bamburi, bamburi beach, mtambo, fisheries, vescon, kadzandani, masters, haller park, cowrie shell, etc.
-    pattern: /\b(?:bamburi|bambury|bambur|bamburi[\s_-]?beach|bamburi[\s_-]?mtambo|mtambo|bamburi[\s_-]?fisheries|fisheries|vescon(?:\s*[123])?|kadzandani|kadzanani|masters|bamburi[\s_-]?masters|haller[\s_-]?park|cowrie[\s_-]?shell)\b/i
+    name: 'Westlands',
+    // Matches westlands, west land, westlands road, etc.
+    pattern: /\b(?:westlands?|west[\s_-]?lands?|west[\s_-]?land)\b/i
+  },
+  {
+    name: 'Kileleshwa',
+    // Matches kileleshwa, kilelesh, etc.
+    pattern: /\b(?:kileleshwa|kilelesh|kileles?h?wa)\b/i
   }
 ];
 
@@ -66,7 +71,7 @@ const INQUIRY_INTENT_PATTERNS = [
   /\b(?:is there (?:an?|any)|are there (?:any)?|any available)\b/i,
   /\b(?:can (?:anyone|someone|you) recommend|please recommend|kindly recommend|recommend (?:an? |a )?)\b/i,
   /\b(?:any leads?|any link|any recommendations?|any suggestions?)\b/i,
-  /\b(?:(?:hosts?|owner)\s+(?:in|for|around)\s+(?:nyali|bamburi))\b/i,
+  /\b(?:(?:hosts?|owner)\s+(?:in|for|around)\s+(?:nyali|westlands?|kileleshwa))\b/i,
   /\b(?:(?:inbox|dm|text|reach out to)\s+me\s+(?:if you have|with details|with options|with availability))\b/i,
   /\b(?:check(?:ing)?[\s-]?in\s+(?:today|tonight|tomorrow|now|\d+[\w\s]+))\b/i,
   /\b(?:for\s+\d+\s*(?:nights?|days?)|per night|nightly|weekend stay)\b/i,
@@ -226,12 +231,12 @@ async function sendWhatsAppAlert(lead) {
     return false;
   }
 
-  const priorityLabel = '🏡 POTENTIAL NYALI / BAMBURI INQUIRY';
+  const priorityLabel = '🏡 POTENTIAL NYALI / WESTLANDS / KILELESHWA INQUIRY';
 
   const text = [
     priorityLabel,
     '',
-    `📍 Area: ${(lead.matchedAreas || []).join(', ') || 'Nyali / Bamburi'}`,
+    `📍 Area: ${(lead.matchedAreas || []).join(', ') || 'Nyali / Westlands / Kileleshwa'}`,
     `👥 Group: ${lead.groupName || 'WhatsApp Group'}`,
     `👤 Sender: ${lead.author || 'Unknown'} (${lead.authorPhone || 'Unknown'})`,
     `🏷️ Category: ${lead.ruleName || 'Property inquiry'}`,
@@ -254,7 +259,7 @@ async function sendWhatsAppAlert(lead) {
   }
 }
 
-// Broad human inquiry detection covering English, Swahili, Sheng, casual phrasing, and abbreviations for Nyali and Bamburi
+// Broad human inquiry detection covering English, Swahili, Sheng, casual phrasing, and abbreviations for Nyali, Westlands, and Kileleshwa
 function checkMessageForKeywords(messageText) {
   if (typeof messageText !== 'string' || !messageText.trim()) return null;
 
@@ -265,7 +270,7 @@ function checkMessageForKeywords(messageText) {
     .replace(/\s+/g, ' ')
     .trim();
 
-  // A message must mention Nyali or Bamburi.
+  // A message must mention Nyali, Westlands, or Kileleshwa.
   const matchedAreas = AREA_PATTERNS.filter(area => area.pattern.test(text));
   if (matchedAreas.length === 0) return null;
 
@@ -315,10 +320,11 @@ function checkMessageForKeywords(messageText) {
     text.includes('?') ||
     /\b(?:tonight|today|tomorrow|weekend|next\s+week|check[\s-]?in|nights?|days?|budget|ksh|kes|urgent|urgently|available\?)\b/i.test(text);
 
-  // Any strong advertising signal rejects the message unless the wording is
-  // clearly a request from a guest AND does not contain seller-intent language.
+  // Any strong advertising signal rejects the message outright, even if it also
+  // contains generic inquiry phrases such as "looking for" or "available".
+  // This guarantees only genuine guest inquiries are sent, never adverts.
   if (hasSellerIntent) return null;
-  if (hasHardAdSignal && !hasExplicitInquiry) return null;
+  if (hasHardAdSignal) return null;
 
   const isDirectRequest = hasAccommodation && hasRequestCue && !hasHardAdSignal;
   if (!hasExplicitInquiry && !isDirectRequest) return null;
@@ -582,7 +588,7 @@ app.get('/qr', (req, res) => {
           <h2>✅ WhatsApp is Connected!</h2>
           <p>Listening to groups in real time.</p>
           <p>Account: <strong>${connectedUser ? connectedUser.id : 'Active'}</strong></p>
-          <p style="color: #8696a0; font-size: 13px;">Any matching Nyali / Bamburi property leads will be sent to WhatsApp number 0724345098.</p>
+          <p style="color: #8696a0; font-size: 13px;">Any matching Nyali / Westlands / Kileleshwa property leads will be sent to WhatsApp number 0724345098.</p>
         </div>
       </body>
       </html>
@@ -668,7 +674,7 @@ app.get('/health', (req, res) => {
 // Test WhatsApp lead notification route
 app.post('/api/test-whatsapp', async (req, res) => {
   const success = await sendWhatsAppAlert({
-    groupName: 'Nyali & Bamburi Real Estate Deals',
+    groupName: 'Nyali, Westlands & Kileleshwa Real Estate Deals',
     author: 'Test Client',
     authorPhone: '+254700000000',
     ruleName: 'Short-stay / Airbnb inquiry',
