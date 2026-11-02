@@ -289,7 +289,7 @@ function checkMessageForKeywords(messageText) {
     /\bwalking\s+distance\s+(?:to|from)\b/i,
     /\b(?:call|whatsapp|text|contact)\s*[:/ -]*\s*(?:me|us|\+?\d[\d\s()-]{6,})/i,
     /\b(?:fast\s+wi[ -]?fi|smart\s+tv|hot\s+shower|fresh\s+towels|self[ -]?check[ -]?in|24[ -]?hour\s+security)\b/i,
-    /\b(?:queen[ -]?size\s+bed|fully\s+equipped\s+kitchen|free\s+parking|balcony\s*/i
+    /\b(?:queen[ -]?size\s+bed|fully\s+equipped\s+kitchen|free\s+parking|balcony)\b/i
   ];
   const hasPropertyAdStructure =
     PROPERTY_AD_PATTERNS.some(pattern => pattern.test(text)) &&
