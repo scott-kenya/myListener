@@ -279,6 +279,27 @@ function checkMessageForKeywords(messageText) {
     return null;
   }
 
+  // Reject property advertisements and promotional listings BEFORE inquiry detection.
+  // This catches amenity-led adverts even when they do not use phrases such as
+  // "book now", "our apartments", or "fully furnished".
+  const PROPERTY_AD_PATTERNS = [
+    /\bamenities\s+(?:included|available|provided)\b/i,
+    /\b(?:this|our)\s+(?:beautiful|lovely|spacious|stunning|modern|executive|luxury)\s+(?:unit|apartment|house|home|studio|property)\b/i,
+    /\b(?:is|are)\s+located\s+(?:near|in|at|along)\b/i,
+    /\bwalking\s+distance\s+(?:to|from)\b/i,
+    /\b(?:call|whatsapp|text|contact)\s*[:/ -]*\s*(?:me|us|\+?\d[\d\s()-]{6,})/i,
+    /\b(?:fast\s+wi[ -]?fi|smart\s+tv|hot\s+shower|fresh\s+towels|self[ -]?check[ -]?in|24[ -]?hour\s+security)\b/i,
+    /\b(?:queen[ -]?size\s+bed|fully\s+equipped\s+kitchen|free\s+parking|balcony\s*/i
+  ];
+  const hasPropertyAdStructure =
+    PROPERTY_AD_PATTERNS.some(pattern => pattern.test(text)) &&
+    /\b(?:amenities|included|call|whatsapp|contact|located|walking distance|wi[ -]?fi|smart tv|parking|security)\b/i.test(text);
+
+  if (hasPropertyAdStructure) {
+    console.log('[Lead filter] Rejected likely property advertisement/promotional listing.');
+    return null;
+  }
+
   // Reject obvious promotions/listings before looking for inquiry words.
   // These are intentionally strong seller-side signals.
   const HARD_AD_PATTERNS = [
