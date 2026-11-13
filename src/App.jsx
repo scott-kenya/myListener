@@ -118,7 +118,7 @@ export default function App() {
               
               // Evaluate against local custom rules if configured, or use backend matched lead signals
               const localResult = evaluateMessageAgainstRules(realMsg.text, rules, realMsg.groupName);
-              const isMatch = localResult.isMatch || Boolean(realMsg.ruleName);
+              const isMatch = realMsg.isQualifiedInquiry === true;
 
               if (isMatch) {
                 const priority = (localResult.isMatch && localResult.highestPriority) 
