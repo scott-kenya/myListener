@@ -11,7 +11,7 @@ const AREA_PATTERNS = [
 const ACCOMMODATION = /\b(?:air[\s-]?bnb|bnb|b&b|apartments?|flats?|houses?|homes?|units?|studios?|rooms?|chumba|nyumba|malazi|accommodation|place to stay|short[\s-]?stay|furnished|serviced|bedrooms?|\d+\s*(?:br|bed|bedroom)s?)\b/i;
 
 const BUYER_INTENT = [
-  /\b(?:i(?:'m| am)?\s+(?:looking for|searching for|in search of|seeking|in need of))\b/i,
+  /\b(?:(?:i(?:'m| am)?\s+)?(?:looking for|searching for|in search of|seeking|in need of))\b/i,
   /\b(?:i\s+(?:need|want|require)\b)\s*(?:an?\s+)?/i,
   /\b(?:looking|planning|wanting)\s+to\s+(?:book|rent|stay|get|find|lease)\b/i,
   /\b(?:anyone\s+(?:with|has|have)|does anyone have|who\s+(?:has|knows)|is there\s+(?:an?\s+)?|are there\s+(?:any\s+)?|can anyone recommend)\b/i,
