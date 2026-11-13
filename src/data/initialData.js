@@ -190,9 +190,9 @@ export const INITIAL_INTEGRATIONS = {
     notifyOn: ['CRITICAL', 'HIGH']
   },
   telegram: {
-    enabled: true,
-    botToken: '8981263518:AAGMitWrxAOrGXKBlk0Wni1nLZZgTkvqe9c',
-    chatId: '8984858765',
+    enabled: false,
+    botToken: '',
+    chatId: '',
     notifyOn: ['CRITICAL', 'HIGH', 'MEDIUM']
   },
   email: {

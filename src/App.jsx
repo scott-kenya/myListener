@@ -65,7 +65,15 @@ export default function App() {
 
   const [integrations, setIntegrations] = useState(() => {
     const saved = localStorage.getItem('omni_integrations_v4');
-    return saved ? JSON.parse(saved) : INITIAL_INTEGRATIONS;
+    if (!saved) return INITIAL_INTEGRATIONS;
+
+    const parsed = JSON.parse(saved);
+    // A Telegram credential was exposed in an earlier public repository version.
+    // Disable the old saved integration and require a newly rotated token.
+    if (parsed.telegram) {
+      parsed.telegram = { ...parsed.telegram, enabled: false, botToken: '' };
+    }
+    return parsed;
   });
 
   const [selectedAlertDetail, setSelectedAlertDetail] = useState(null);
@@ -118,7 +126,7 @@ export default function App() {
               
               // Evaluate against local custom rules if configured, or use backend matched lead signals
               const localResult = evaluateMessageAgainstRules(realMsg.text, rules, realMsg.groupName);
-              const isMatch = localResult.isMatch || Boolean(realMsg.ruleName);
+              const isMatch = realMsg.isQualifiedInquiry === true;
 
               if (isMatch) {
                 const priority = (localResult.isMatch && localResult.highestPriority) 

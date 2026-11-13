@@ -7,6 +7,7 @@ import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeys
 import path from 'path';
 import fs from 'fs';
 import http from 'http';
+import { checkMessageForKeywords } from './src/utils/inquiryClassifier.js';
 
 const app = express();
 app.use(cors());
@@ -259,124 +260,6 @@ async function sendWhatsAppAlert(lead) {
   }
 }
 
-// Broad human inquiry detection covering English, Swahili, Sheng, casual phrasing, and abbreviations for Nyali, Westlands, and Kileleshwa
-function checkMessageForKeywords(messageText) {
-  if (typeof messageText !== 'string' || !messageText.trim()) return null;
-
-  const text = messageText
-    .normalize('NFKC')
-    .toLowerCase()
-    .replace(/[’‘`´]/g, "'")
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  // A message must mention Nyali, Westlands, or Kileleshwa.
-  const matchedAreas = AREA_PATTERNS.filter(area => area.pattern.test(text));
-  if (matchedAreas.length === 0) return null;
-
-  // Never alert on land/plot sales.
-  if (/\b(?:plots?\s+for\s+sale|land\s+for\s+sale|acres?\s+for\s+sale|title\s+deed\s+ready)\b/i.test(text)) {
-    return null;
-  }
-
-  // Reject property advertisements and promotional listings BEFORE inquiry detection.
-  // This catches amenity-led adverts even when they do not use phrases such as
-  // "book now", "our apartments", or "fully furnished".
-  const PROPERTY_AD_PATTERNS = [
-    /\bamenities\s+(?:included|available|provided)\b/i,
-    /\b(?:this|our)\s+(?:beautiful|lovely|spacious|stunning|modern|executive|luxury)\s+(?:unit|apartment|house|home|studio|property)\b/i,
-    /\b(?:is|are)\s+located\s+(?:near|in|at|along)\b/i,
-    /\bwalking\s+distance\s+(?:to|from)\b/i,
-    /\b(?:call|whatsapp|text|contact)\s*[:/ -]*\s*(?:me|us|\+?\d[\d\s()-]{6,})/i,
-    /\b(?:fast\s+wi[ -]?fi|smart\s+tv|hot\s+shower|fresh\s+towels|self[ -]?check[ -]?in|24[ -]?hour\s+security)\b/i,
-    /\b(?:queen[ -]?size\s+bed|fully\s+equipped\s+kitchen|free\s+parking|balcony)\b/i
-  ];
-  const hasPropertyAdStructure =
-    PROPERTY_AD_PATTERNS.some(pattern => pattern.test(text)) &&
-    /\b(?:amenities|included|call|whatsapp|contact|located|walking distance|wi[ -]?fi|smart tv|parking|security)\b/i.test(text);
-
-  if (hasPropertyAdStructure) {
-    console.log('[Lead filter] Rejected likely property advertisement/promotional listing.');
-    return null;
-  }
-
-  // Reject obvious promotions/listings before looking for inquiry words.
-  // These are intentionally strong seller-side signals.
-  const HARD_AD_PATTERNS = [
-    /\b(?:we\s+(?:offer|have|provide|manage|rent\s+out|let\s+out))\b/i,
-    /\b(?:our\s+(?:apartments?|units?|houses?|villas?|properties|rates?|prices?|guests?|rooms?))\b/i,
-    /\b(?:available\s+(?:now|today|for\s+(?:booking|rent|occupation|short[\s-]?stay)))\b/i,
-    /\b(?:now\s+(?:available|booking|letting|renting)|book\s+now|book\s+today|book\s+with\s+us)\b/i,
-    /\b(?:contact\s+(?:me|us|the\s+host)|call\s+(?:me|us|now)|whatsapp\s+(?:me|us)|dm\s+(?:me|us)\s+for)\b/i,
-    /\b(?:daily\s+rate|nightly\s+rate|rates?\s*[:=-]\s*(?:ksh|kes|usd|\$)?\s*\d+|price\s*[:=-]\s*(?:ksh|kes|usd|\$)?\s*\d+|from\s+(?:ksh|kes|usd|\$)\s*\d+)\b/i,
-    /\b(?:paybill|till\s*(?:no|number)?|lipa\s+na\s+mpesa)\b/i,
-    /\b(?:welcome\s+to\s+our|experience\s+(?:luxury|comfort)|enjoy\s+(?:luxury|your\s+stay)|perfect\s+for\s+(?:families|holidays|your\s+stay))\b/i,
-    /\b(?:fully\s+furnished|swimming\s+pool|free\s+wifi|free\s+wi-fi|secure\s+parking|air\s*condition(?:ed|ing))\b/i
-  ];
-
-  const hasHardAdSignal = HARD_AD_PATTERNS.some(pattern => pattern.test(text));
-
-  // Seller/agent wording should disqualify the message even if it also contains
-  // a generic phrase such as "looking for" or "available".
-  const hasSellerIntent = /\b(?:i\s+am\s+advertising|advert(?:ise|ising|isement)|listing\s+available|property\s+listing|host\s+here|agent\s+here|landlord\s+here|we\s+are\s+located|check\s+out\s+this|limited\s+offer|special\s+offer|discount\s+available|vacancy\s+available)\b/i.test(text);
-
-  // Positive signals must indicate that the author is seeking accommodation.
-  const explicitInquiryPatterns = [
-    /\b(?:i(?:'m| am)?\s+(?:looking\s+for|searching\s+for|in\s+need\s+of|seeking))\b/i,
-    /\b(?:i\s+(?:need|want|require)\s+(?:an?\s+)?(?:airbnb|bnb|apartment|house|room|accommodation|place|unit|stay))\b/i,
-    /\b(?:natafuta|ninatafuta|nahitaji|ninahitaji|naomba\s+(?:kupata|nyumba|chumba|malazi))\b/i,
-    /\b(?:anyone\s+(?:know|has|have|with)|does\s+anyone\s+have|who\s+(?:has|knows|can\s+recommend)|can\s+anyone\s+recommend)\b/i,
-    /\b(?:is\s+there\s+(?:an?\s+)?(?:airbnb|bnb|apartment|room|house|accommodation|place)|are\s+there\s+(?:any\s+)?(?:airbnbs?|apartments?|rooms?|houses?|units?))\b/i,
-    /\b(?:need\s+(?:a|an|some)?\s*(?:place\s+to\s+stay|accommodation|room|house|apartment|airbnb|bnb))\b/i,
-    /\b(?:looking\s+to\s+(?:book|rent|stay|get))\b/i,
-    /\b(?:check[\s-]?in\s+(?:today|tonight|tomorrow)|for\s+\d+\s*(?:nights?|days?)|budget\s*(?:is|of|around)?\s*(?:ksh|kes)?\s*\d+k?)\b/i,
-    /\b(?:kuna\s+(?:yeyote|mwenye|mtu|nyumba|chumba)|nani\s+(?:ako\s+na|ana|anayejua)|mko\s+na|uko\s+na|iko\s+available)\b/i
-  ];
-  const hasExplicitInquiry = explicitInquiryPatterns.some(pattern => pattern.test(text));
-
-  // A short, telegraphic query can qualify only if it looks like a request
-  // (question mark or a stay date/budget cue), not merely a property listing.
-  const hasAccommodation = ACCOMMODATION_PATTERNS.some(pattern => pattern.test(text));
-  const hasRequestCue =
-    text.includes('?') ||
-    /\b(?:tonight|today|tomorrow|weekend|next\s+week|check[\s-]?in|nights?|days?|budget|ksh|kes|urgent|urgently|available\?)\b/i.test(text);
-
-  // Any strong advertising signal rejects the message outright, even if it also
-  // contains generic inquiry phrases such as "looking for" or "available".
-  // This guarantees only genuine guest inquiries are sent, never adverts.
-  if (hasSellerIntent) return null;
-  if (hasHardAdSignal) return null;
-
-  const isDirectRequest = hasAccommodation && hasRequestCue && !hasHardAdSignal;
-  if (!hasExplicitInquiry && !isDirectRequest) return null;
-
-  const isShortStay = /\b(?:airbnb|bnb|short[\s-]?stay|holiday|vacation|staycation|nightly|per night|\d+\s*nights?|weekend stay)\b/i.test(text);
-  const isFurnished = /\b(?:furnished|serviced)\b/i.test(text);
-
-  let ruleName = 'House / Apartment inquiry';
-  if (isShortStay) {
-    ruleName = 'Short-stay / Airbnb guest enquiry';
-  } else if (isFurnished) {
-    ruleName = 'Furnished rental enquiry';
-  }
-
-  const areaNames = matchedAreas.map(area => area.name);
-  const matchedKeywords = [
-    ...areaNames,
-    isShortStay ? 'Short-stay / Airbnb' : (isFurnished ? 'Furnished unit' : 'Residential rental'),
-    hasExplicitInquiry ? 'Explicit guest inquiry' : 'Direct stay request'
-  ];
-
-  return {
-    ruleName,
-    priority: 'CRITICAL',
-    matchedKeywords,
-    matchedAreas: areaNames,
-    categories: [ruleName],
-    leadType: `Potential ${areaNames.join(' / ')} Client / Guest`
-  };
-}
-
 // Initialize Baileys WhatsApp Connection
 async function initWhatsAppSession() {
   try {
@@ -551,6 +434,7 @@ async function initWhatsAppSession() {
           console.log(`Text: "${text}"\n`);
 
           const leadAlert = {
+            isQualifiedInquiry: true,
             id: `lead-${msg.key?.id || Date.now()}`,
             groupName,
             author: senderName,
